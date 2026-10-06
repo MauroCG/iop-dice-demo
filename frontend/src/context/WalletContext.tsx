@@ -30,7 +30,6 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (parsed.expiresAt > Date.now() && parsed.remainingAmount > 0) {
           setGrant(parsed);
           setPointer(parsed.pointer);
-          setIsInRoom(true);
         } else {
           localStorage.removeItem(LOCAL_STORAGE_GRANT_KEY);
         }
