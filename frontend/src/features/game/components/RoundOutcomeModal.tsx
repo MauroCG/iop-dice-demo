@@ -2,19 +2,25 @@ import React from 'react';
 import { Sparkles, Trophy, TrendingUp, ShieldCheck } from 'lucide-react';
 import { Modal } from '../../../components/shared/Modal';
 import { Button } from '../../../components/shared/Button';
+import { CurrencyBadge } from '../../../components/shared/CurrencyBadge';
 import { useGame } from '../../../context/GameContext';
-import { formatUSD, truncatePointer } from '../../../utils/formatters';
+import { useWallet } from '../../../context/WalletContext';
+import { formatUSD, formatAssetAmount, convertUSDToNative, truncatePointer } from '../../../utils/formatters';
 import { COPY } from '../../../constants/copy.es';
 
 export const RoundOutcomeModal: React.FC = () => {
   const { isOutcomeModalOpen, setIsOutcomeModalOpen, roundState } = useGame();
+  const { grant } = useWallet();
   const { outcome, userBet } = roundState;
 
   if (!outcome) return null;
 
-  const isUserWinner =
-    userBet && userBet.numberGuess === outcome.winningNumber;
+  const isUserWinner = userBet && userBet.numberGuess === outcome.winningNumber;
   const hasWinners = outcome.winners.length > 0;
+
+  const userAssetCode = grant?.assetCode || 'USD';
+  const userAssetScale = grant?.assetScale ?? 2;
+  const nativeUserPayout = convertUSDToNative(outcome.payoutPerWinner, userAssetCode, userAssetScale);
 
   return (
     <Modal
@@ -68,7 +74,7 @@ export const RoundOutcomeModal: React.FC = () => {
         </div>
 
         {/* Dice Outcome Highlight */}
-        <div className="flex items-center justify-center gap-4 p-4 rounded-2xl bg-dark-base border border-slate-800">
+        <div className="flex items-center justify-center gap-4 p-3.5 rounded-2xl bg-dark-base border border-slate-800">
           <div className="flex items-center gap-2">
             <span className="text-2xl font-mono font-bold text-slate-300">
               [{outcome.diceValues[0]}] + [{outcome.diceValues[1]}]
@@ -109,11 +115,17 @@ export const RoundOutcomeModal: React.FC = () => {
               </div>
 
               {isUserWinner && (
-                <div className="flex justify-between text-neon-cyan pt-1 font-bold">
+                <div className="flex justify-between text-neon-cyan pt-1 font-bold items-center">
                   <span>{COPY.outcomes.yourShare}</span>
-                  <span className="font-mono text-base">
-                    +{formatUSD(outcome.payoutPerWinner)}
-                  </span>
+                  <div className="flex items-center gap-1.5 font-mono">
+                    <span className="text-base font-black">
+                      +{formatAssetAmount(nativeUserPayout, userAssetCode, userAssetScale)}
+                    </span>
+                    <span className="text-xs text-slate-400">
+                      (+{formatUSD(outcome.payoutPerWinner)})
+                    </span>
+                    <CurrencyBadge assetCode={userAssetCode} size="xs" showFlag />
+                  </div>
                 </div>
               )}
             </>
@@ -127,7 +139,7 @@ export const RoundOutcomeModal: React.FC = () => {
           )}
         </div>
 
-        {/* Winners List */}
+        {/* Winners List with Currency Badges */}
         {hasWinners && (
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-semibold text-slate-300">
@@ -135,16 +147,20 @@ export const RoundOutcomeModal: React.FC = () => {
             </span>
             <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
               {outcome.winners.map((w) => (
-                <span
+                <div
                   key={w.id}
-                  className={`text-xs px-2.5 py-1 rounded-lg border font-mono ${
+                  className={`text-xs px-2.5 py-1 rounded-lg border font-mono flex items-center gap-1.5 ${
                     w.isLocalPlayer
                       ? 'bg-neon-cyan/20 border-neon-cyan text-neon-cyan font-bold'
                       : 'bg-dark-base border-slate-800 text-slate-300'
                   }`}
                 >
-                  {w.playerName} ({truncatePointer(w.paymentPointer, 14)})
-                </span>
+                  <CurrencyBadge assetCode={w.assetCode} size="xs" showFlag />
+                  <span>{w.playerName}</span>
+                  <span className="text-[10px] text-slate-500">
+                    ({truncatePointer(w.paymentPointer, 12)})
+                  </span>
+                </div>
               ))}
             </div>
           </div>

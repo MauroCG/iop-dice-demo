@@ -2,7 +2,8 @@ import React from 'react';
 import { Users } from 'lucide-react';
 import { useGame } from '../../../context/GameContext';
 import { Badge } from '../../../components/shared/Badge';
-import { formatUSD, truncatePointer } from '../../../utils/formatters';
+import { CurrencyBadge } from '../../../components/shared/CurrencyBadge';
+import { formatAssetAmount, truncatePointer } from '../../../utils/formatters';
 import { COPY } from '../../../constants/copy.es';
 
 export const PlayerPoolList: React.FC = () => {
@@ -39,13 +40,13 @@ export const PlayerPoolList: React.FC = () => {
                   : 'bg-dark-base/70 border-slate-800 text-slate-300'
               }`}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 truncate">
                 {bet.isLocalPlayer && (
                   <Badge variant="cyan" size="sm">
                     TÚ
                   </Badge>
                 )}
-                <span className="font-semibold text-slate-200 truncate max-w-[110px] sm:max-w-[150px]">
+                <span className="font-semibold text-slate-200 truncate max-w-[100px] sm:max-w-[130px]">
                   {bet.playerName}
                 </span>
                 <span className="text-[10px] text-slate-500 font-mono hidden md:inline">
@@ -53,9 +54,12 @@ export const PlayerPoolList: React.FC = () => {
                 </span>
               </div>
 
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-slate-400 font-mono">
-                  {formatUSD(bet.amountUSD)}
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Dynamic Neon Currency Badge */}
+                <CurrencyBadge assetCode={bet.assetCode} size="xs" showFlag />
+
+                <span className="text-[10px] text-slate-300 font-mono">
+                  {formatAssetAmount(bet.nativeAmount, bet.assetCode, bet.assetScale)}
                 </span>
                 <Badge variant="purple" size="sm">
                   #{bet.numberGuess}

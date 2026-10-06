@@ -12,9 +12,12 @@ export const playerBetSchema = z.object({
   playerId: z.string(),
   playerName: z.string(),
   paymentPointer: z.string(),
+  assetCode: z.string().default('USD'),
+  assetScale: z.number().default(2),
+  nativeAmount: z.number().positive(),
   numberGuess: betGuessSchema,
   amountUSD: z.number().refine((val) => val === 0.10, {
-    message: 'La apuesta debe ser estrictamente de $0.10 USD',
+    message: 'La apuesta debe ser estrictamente de $0.10 USD en la mesa',
   }),
   isLocalPlayer: z.boolean(),
   timestamp: z.number(),

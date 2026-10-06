@@ -1,9 +1,13 @@
+import type { WalletAddressResolved } from './currency';
+
 export interface GrantSession {
   grantId: string;
   pointer: string;
-  totalAmount: number; // e.g. 5.00 ($5.00 USD)
-  remainingAmount: number; // e.g. 4.90 ($4.90 USD)
-  currency: 'USD';
+  assetCode: string; // 'USD' | 'EUR' | 'GBP' | 'COP' | 'MXN'
+  assetScale: number; // 2 o 0
+  totalAmount: number; // Monto en la divisa nativa (ej. 20000 COP, 5.00 USD)
+  remainingAmount: number; // Monto restante nativo (ej. 19580 COP)
+  equivalentUSD: number; // Equivalente en USD (ej. 5.00 USD)
   createdAt: number;
   expiresAt: number;
 }
@@ -14,7 +18,9 @@ export type MicroTxStatus = 'pending' | 'success' | 'failed';
 export interface MicroTransaction {
   id: string;
   roundId: string;
-  amount: number;
+  amount: number; // Monto nativo
+  assetCode: string;
+  amountUSD: number; // Equivalente en USD ($0.10)
   type: MicroTxType;
   status: MicroTxStatus;
   timestamp: number;
@@ -24,11 +30,14 @@ export interface MicroTransaction {
 
 export interface WalletContextType {
   pointer: string | null;
+  assetCode: string;
+  assetScale: number;
   isConnected: boolean;
   isAuthorizing: boolean;
   grant: GrantSession | null;
   transactions: MicroTransaction[];
-  connectWallet: (paymentPointer: string, grantAmountUSD: number) => Promise<boolean>;
+  resolveWallet: (pointer: string) => Promise<WalletAddressResolved>;
+  connectWallet: (resolvedWallet: WalletAddressResolved, grantAmountNative: number) => Promise<boolean>;
   disconnectWallet: () => void;
   authorizeMicroPayment: (amountUSD: number, roundId: string) => Promise<MicroTransaction>;
   creditPayout: (amountUSD: number, roundId: string) => Promise<void>;

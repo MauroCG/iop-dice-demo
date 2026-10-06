@@ -13,6 +13,7 @@ import {
 } from '../constants/game';
 import { rollDice, calculateRoundPayout } from '../utils/dice';
 import { generateRandomPeerBet } from '../services/websocket/mockWsDriver';
+import { convertUSDToNative } from '../utils/formatters';
 import { COPY } from '../constants/copy.es';
 
 const GameContext = createContext<GameContextType | undefined>(undefined);
@@ -201,7 +202,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsSubmittingBet(true);
     try {
       // Authorize micro-payment (deducts 10 cents from active grant)
-      await authorizeMicroPayment(BET_AMOUNT_USD, roundId);
+      const nativeAmount = convertUSDToNative(BET_AMOUNT_USD, grant.assetCode, grant.assetScale);
 
       const localBet: PlayerBet = {
         id: `bet_local_${Date.now()}`,
@@ -209,6 +210,9 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
         playerId: 'local_player',
         playerName: 'Tú',
         paymentPointer: grant.pointer,
+        assetCode: grant.assetCode,
+        assetScale: grant.assetScale,
+        nativeAmount,
         numberGuess: selectedNumber,
         amountUSD: 0.10,
         isLocalPlayer: true,
