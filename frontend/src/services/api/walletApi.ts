@@ -1,15 +1,26 @@
-import { simulateNetworkDelay } from './client';
+import { apiClient, simulateNetworkDelay } from './client';
 import type { GrantSession, MicroTransaction } from '../../types/wallet';
 import type { WalletAddressResolved } from '../../types/currency';
 import { MULTI_ASSET_DEMO_WALLETS, SUPPORTED_ASSETS } from '../../constants/currencies';
 import { convertUSDToNative, formatAssetAmount } from '../../utils/formatters';
 
 export const walletApi = {
-  // Simula el endpoint backend que llama a @interledger/open-payments: walletAddress.get({ url })
+  // Llama al endpoint backend GET /api/wallet/resolve que ejecuta @interledger/open-payments
   async resolveWalletAddress(pointer: string): Promise<WalletAddressResolved> {
-    await simulateNetworkDelay(200);
-
     const cleanPointer = pointer.trim();
+
+    try {
+      const res = await apiClient.get<WalletAddressResolved>('/wallet/resolve', {
+        params: { pointer: cleanPointer },
+      });
+      if (res.data && res.data.assetCode) {
+        return res.data;
+      }
+    } catch {
+      // Si el backend no está disponible en este instante, usar heurística local
+    }
+
+    await simulateNetworkDelay(150);
 
     // Buscar si coincide con alguno de los presets predefinidos
     const match = MULTI_ASSET_DEMO_WALLETS.find(
@@ -56,7 +67,22 @@ export const walletApi = {
     resolvedWallet: WalletAddressResolved,
     grantAmountNative: number
   ): Promise<GrantSession> {
-    await simulateNetworkDelay(450);
+    try {
+      const res = await apiClient.post<GrantSession>('/wallet/grant', {
+        walletAddress: resolvedWallet.pointer || resolvedWallet.id,
+        assetCode: resolvedWallet.assetCode,
+        assetScale: resolvedWallet.assetScale,
+        amountNative: grantAmountNative,
+      });
+      if (res.data && res.data.grantId) {
+        localStorage.setItem('ilp_grant_token', res.data.grantId);
+        return res.data;
+      }
+    } catch {
+      // Fallback local si backend está desconectado
+    }
+
+    await simulateNetworkDelay(250);
 
     const asset = SUPPORTED_ASSETS[resolvedWallet.assetCode] || SUPPORTED_ASSETS.USD;
     const equivalentUSD = Number((grantAmountNative / asset.exchangeRateToUSD).toFixed(2));
@@ -83,8 +109,6 @@ export const walletApi = {
     roundId: string,
     amountUSD = 0.10
   ): Promise<{ updatedGrant: GrantSession; transaction: MicroTransaction }> {
-    await simulateNetworkDelay(350);
-
     // Convertir $0.10 USD a la moneda nativa del jugador
     const nativeDebit = convertUSDToNative(
       amountUSD,
@@ -105,6 +129,39 @@ export const walletApi = {
         )})`
       );
     }
+
+    try {
+      const res = await apiClient.post<{
+        success: boolean;
+        transaction: MicroTransaction;
+        remainingAmount: number;
+      }>('/wallet/bet', {
+        roundId,
+        walletAddress: grantSession.pointer,
+        pointer: grantSession.pointer,
+        numberGuess: 7, // Fallback guess for REST test
+        assetCode: grantSession.assetCode,
+        assetScale: grantSession.assetScale,
+        nativeAmount: nativeDebit,
+        amountUSD,
+        remainingAmount: grantSession.remainingAmount,
+      });
+
+      if (res.data?.success && res.data?.transaction) {
+        const updatedGrant: GrantSession = {
+          ...grantSession,
+          remainingAmount: res.data.remainingAmount,
+        };
+        return { updatedGrant, transaction: res.data.transaction };
+      }
+    } catch (err: any) {
+      if (err.message && !err.message.includes('Network Error') && !err.message.includes('ECONNREFUSED')) {
+        // Si el backend arrojó un error de validación de negocio (ej. saldo insuficiente o ronda cerrada)
+        throw err;
+      }
+    }
+
+    await simulateNetworkDelay(250);
 
     const updatedRemaining = Number(
       (grantSession.remainingAmount - nativeDebit).toFixed(grantSession.assetScale)
@@ -140,7 +197,7 @@ export const walletApi = {
     roundId: string,
     amountUSD: number
   ): Promise<{ updatedGrant: GrantSession; transaction: MicroTransaction }> {
-    await simulateNetworkDelay(250);
+    await simulateNetworkDelay(200);
 
     const nativeCredit = convertUSDToNative(
       amountUSD,
@@ -177,3 +234,4 @@ export const walletApi = {
     return { updatedGrant, transaction };
   },
 };
+
