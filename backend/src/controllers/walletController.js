@@ -37,6 +37,7 @@ export const walletController = {
         assetCode,
         assetScale,
         amountNative: Number(amountNative),
+        redirectUri: req.body.redirectUri || 'http://localhost:5173/auth/callback',
       });
 
       return res.json(session);
@@ -47,12 +48,63 @@ export const walletController = {
   },
 
   /**
+   * POST /api/wallet/grant/continue
+   */
+  async continueGrant(req, res) {
+    try {
+      const {
+        interactRef,
+        continueUri,
+        continueToken,
+        walletAddress,
+        totalAmount,
+        assetCode,
+        assetScale,
+      } = req.body;
+
+      if (!interactRef || !continueUri || !continueToken) {
+        return res.status(400).json({
+          error: 'Campos requeridos faltantes: interactRef, continueUri, continueToken',
+        });
+      }
+
+      const session = await openPaymentsService.continueGrantSession({
+        interactRef,
+        continueUri,
+        continueToken,
+        walletAddress,
+        totalAmount,
+        assetCode,
+        assetScale,
+      });
+
+      return res.json(session);
+    } catch (err) {
+      console.error('[walletController.continueGrant] Error:', err);
+      return res.status(500).json({ error: err.message || 'Error al finalizar autorización interactiva' });
+    }
+  },
+
+  /**
    * POST /api/wallet/bet
    */
   async bet(req, res) {
     try {
-      const authHeader = req.headers.authorization;
-      const grantToken = authHeader?.replace(/^GNAP\s+/i, '') || req.body.grantToken;
+      const rawBodyToken = req.body.grantToken;
+      const rawHeaderToken = req.headers.authorization?.replace(/^GNAP\s+/i, '').trim();
+
+      const isRealToken = (t) => Boolean(t && typeof t === 'string' && !t.startsWith('grant_'));
+
+      let grantToken = null;
+      if (isRealToken(rawBodyToken)) {
+        grantToken = rawBodyToken;
+      } else if (isRealToken(rawHeaderToken)) {
+        grantToken = rawHeaderToken;
+      } else {
+        grantToken = rawBodyToken || rawHeaderToken;
+      }
+
+      console.log(`[walletController.bet] Apuesta recibida. Token: ${grantToken ? grantToken.slice(0, 10) + '...' : 'ninguno'}`);
 
       const {
         roundId,

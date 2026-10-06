@@ -4,28 +4,22 @@ import type { GameContextType, RoundState, RecentRoundSummary } from '../types/g
 import type { PlayerBet, RoundOutcome } from '../schemas/game.schema';
 import { useWallet } from './WalletContext';
 import { useToast } from './ToastContext';
-import { useCountdown } from '../hooks/useCountdown';
 import { useAudioFeedback } from '../hooks/useAudioFeedback';
-import {
-  ROUND_DURATION_SECONDS,
-  ROLLING_DURATION_SECONDS,
-  BET_AMOUNT_USD,
-} from '../constants/game';
-import { rollDice, calculateRoundPayout } from '../utils/dice';
-import { generateRandomPeerBet } from '../services/websocket/mockWsDriver';
-import { convertUSDToNative } from '../utils/formatters';
+import { BET_AMOUNT_USD } from '../constants/game';
+import { gameWsClient } from '../services/websocket/gameWsClient';
 import { COPY } from '../constants/copy.es';
 
 const GameContext = createContext<GameContextType | undefined>(undefined);
 
 export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { grant, authorizeMicroPayment, creditPayout, isConnected, setIsModalOpen } = useWallet();
+  const { grant, authorizeMicroPayment, isConnected, setIsModalOpen, isInRoom } = useWallet();
   const { addToast } = useToast();
   const { playTick, playWinFanfare } = useAudioFeedback();
 
   const [roundNumber, setRoundNumber] = useState(1);
   const [roundId, setRoundId] = useState(() => `r_${Date.now()}`);
   const [phase, setPhase] = useState<'BETTING' | 'ROLLING' | 'RESOLVING' | 'SETTLED'>('BETTING');
+  const [timeLeftSeconds, setTimeLeftSeconds] = useState(30);
 
   const [accumulatedJackpot, setAccumulatedJackpot] = useState(0.00);
   const [bets, setBets] = useState<PlayerBet[]>([]);
@@ -39,148 +33,169 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isSubmittingBet, setIsSubmittingBet] = useState(false);
   const [isOutcomeModalOpen, setIsOutcomeModalOpen] = useState(false);
   const [recentHistory, setRecentHistory] = useState<RecentRoundSummary[]>([
-    { roundNumber: 0, diceValues: [4, 3], sum: 7, winnerCount: 2, totalPool: 0.80, timestamp: Date.now() - 40000 },
+    { roundNumber: 0, diceValues: [4, 3], sum: 7, winnerCount: 0, totalPool: 0.00, timestamp: Date.now() - 40000 },
   ]);
 
-  // Peer bot bet generation timer during BETTING phase
-  const botIntervalRef = useRef<number | null>(null);
+  const pointerRef = useRef(grant?.pointer);
+  pointerRef.current = grant?.pointer;
 
-  // References for closure values
-  const betsRef = useRef(bets);
-  betsRef.current = bets;
-  const userBetRef = useRef(userBet);
-  userBetRef.current = userBet;
-  const jackpotRef = useRef(accumulatedJackpot);
-  jackpotRef.current = accumulatedJackpot;
-  const roundIdRef = useRef(roundId);
-  roundIdRef.current = roundId;
-  const roundNumRef = useRef(roundNumber);
-  roundNumRef.current = roundNumber;
+  // Conectar WebSocket y sincronizar estado autoritativo
+  useEffect(() => {
+    gameWsClient.connect();
 
-  // Handle countdown expiration (20s -> 0s)
-  const handleCountdownExpire = useCallback(() => {
-    // Phase transitions to ROLLING
-    setPhase('ROLLING');
-    if (botIntervalRef.current) {
-      clearInterval(botIntervalRef.current);
-      botIntervalRef.current = null;
-    }
+    const unsubConnected = gameWsClient.on('CONNECTED', () => {
+      if (pointerRef.current) {
+        gameWsClient.joinRoom(pointerRef.current, grant?.assetCode || 'USD');
+      }
+    });
 
-    // 3 seconds of rolling animation
-    setTimeout(() => {
-      // Calculate outcome
-      const [d1, d2] = rollDice();
-      const sum = d1 + d2;
-      setDiceValues([d1, d2]);
-      setWinningNumber(sum);
-      setPhase('RESOLVING');
+    const unsubRoundState = gameWsClient.on('ROUND_STATE', (data) => {
+      if (!data) return;
+      setRoundId(data.roundId);
+      setRoundNumber(data.roundNumber);
+      setPhase(data.phase);
+      setTimeLeftSeconds(data.timeLeftSeconds ?? 30);
+      setAccumulatedJackpot(data.accumulatedJackpot ?? 0.00);
+      setDiceValues(data.diceValues ?? [3, 4]);
+      setWinningNumber(data.winningNumber ?? 7);
 
-      // Identify winners
-      const currentBets = betsRef.current;
-      const winners = currentBets.filter((b) => b.numberGuess === sum);
-      const currentRoundPool = Number((currentBets.length * BET_AMOUNT_USD).toFixed(2));
-      const currentJackpot = jackpotRef.current;
+      const mappedBets: PlayerBet[] = (data.bets || []).map((b: any) => ({
+        ...b,
+        isLocalPlayer: b.paymentPointer === pointerRef.current,
+      }));
+      setBets(mappedBets);
 
-      const payout = calculateRoundPayout(currentRoundPool, currentJackpot, winners.length);
-
-      const roundOutcome: RoundOutcome = {
-        roundId: roundIdRef.current,
-        diceValues: [d1, d2],
-        winningNumber: sum,
-        totalGrossPool: payout.totalGrossPool,
-        houseFee: payout.houseFee,
-        netPrizePool: payout.netPrizePool,
-        accumulatedJackpot: payout.rolloverToNextRound,
-        winners,
-        payoutPerWinner: payout.payoutPerWinner,
-      };
-
-      setOutcome(roundOutcome);
-      setIsOutcomeModalOpen(true);
-
-      // Check if local player won
-      const userWon = userBetRef.current && userBetRef.current.numberGuess === sum;
-      if (userWon && payout.payoutPerWinner > 0) {
-        creditPayout(payout.payoutPerWinner, roundIdRef.current);
-        playWinFanfare();
-        // Fire celebration confetti
-        try {
-          confetti({
-            particleCount: 100,
-            spread: 70,
-            origin: { y: 0.6 },
-            colors: ['#00F5FF', '#A855F7', '#38BDF8', '#F59E0B'],
-          });
-        } catch {
-          // Fallback if canvas is unavailable
-        }
+      const localBet = mappedBets.find((b) => b.isLocalPlayer);
+      if (localBet) {
+        setUserBet(localBet);
       }
 
-      // Update jackpot for next round
-      setAccumulatedJackpot(payout.rolloverToNextRound);
+      if (data.recentHistory?.length) {
+        setRecentHistory(data.recentHistory);
+      }
+    });
 
-      // Save to recent history
+    const unsubRoundStart = gameWsClient.on('ROUND_START', (data) => {
+      setRoundId(data.roundId);
+      setRoundNumber(data.roundNumber);
+      setPhase('BETTING');
+      setTimeLeftSeconds(data.timeLeftSeconds ?? 30);
+      setAccumulatedJackpot(data.accumulatedJackpot ?? 0.00);
+      setBets([]);
+      setUserBet(null);
+      setSelectedNumber(null);
+      setWinningNumber(null);
+      setIsOutcomeModalOpen(false);
+    });
+
+    const unsubTick = gameWsClient.on('ROUND_TICK', (data) => {
+      if (data?.timeLeftSeconds !== undefined) {
+        setTimeLeftSeconds(data.timeLeftSeconds);
+        if (data.timeLeftSeconds <= 5 && data.timeLeftSeconds > 0) {
+          playTick();
+        }
+      }
+    });
+
+    const unsubBetPlaced = gameWsClient.on('BET_PLACED', (data) => {
+      if (!data) return;
+      const isLocal = data.paymentPointer === pointerRef.current;
+      const formattedBet: PlayerBet = {
+        ...data,
+        isLocalPlayer: isLocal,
+      };
+
+      setBets((prev) => {
+        const filtered = prev.filter((b) => b.id !== data.id && b.paymentPointer !== data.paymentPointer);
+        return [...filtered, formattedBet];
+      });
+
+      if (isLocal) {
+        setUserBet(formattedBet);
+      }
+    });
+
+    const unsubRolling = gameWsClient.on('ROUND_ROLLING', () => {
+      setPhase('ROLLING');
+    });
+
+    const unsubOutcome = gameWsClient.on('ROUND_OUTCOME', (data) => {
+      if (!data) return;
+      setPhase('RESOLVING');
+      setDiceValues(data.diceValues);
+      setWinningNumber(data.winningNumber);
+      setOutcome(data);
+      setIsOutcomeModalOpen(true);
+
+      // Actualizar pozo acumulado para la siguiente ronda
+      if (data.accumulatedJackpot !== undefined) {
+        setAccumulatedJackpot(data.accumulatedJackpot);
+      }
+
+      // Guardar en historial reciente
       setRecentHistory((prev) => [
         {
-          roundNumber: roundNumRef.current,
-          diceValues: [d1, d2],
-          sum,
-          winnerCount: winners.length,
-          totalPool: payout.totalGrossPool,
+          roundNumber: data.roundNumber,
+          diceValues: data.diceValues,
+          sum: data.winningNumber,
+          winnerCount: data.winners?.length || 0,
+          totalPool: data.totalGrossPool,
           timestamp: Date.now(),
         },
         ...prev.slice(0, 9),
       ]);
 
-      // Phase transitions to SETTLED and resets for next round after 4.5 seconds
+      // Verificar si el usuario local ganó
+      const userWon = data.winners?.some((w: any) => w.paymentPointer === pointerRef.current);
+      if (userWon) {
+        playWinFanfare();
+        try {
+          confetti({
+            particleCount: 120,
+            spread: 80,
+            origin: { y: 0.6 },
+            colors: ['#00F5FF', '#A855F7', '#38BDF8', '#F59E0B'],
+          });
+        } catch {
+          // Fallback
+        }
+      }
+
       setTimeout(() => {
         setPhase('SETTLED');
-        setTimeout(() => {
-          // Start new round
-          setRoundNumber((r) => r + 1);
-          setRoundId(`r_${Date.now()}`);
-          setBets([]);
-          setUserBet(null);
-          setSelectedNumber(null);
-          setWinningNumber(null);
-          setPhase('BETTING');
-          countdown.reset(ROUND_DURATION_SECONDS);
-        }, 1000);
-      }, 4500);
-    }, ROLLING_DURATION_SECONDS * 1000);
-  }, [creditPayout, playWinFanfare]);
+      }, 3500);
+    });
 
-  const countdown = useCountdown({
-    durationSeconds: ROUND_DURATION_SECONDS,
-    onExpire: handleCountdownExpire,
-    autoStart: true,
-  });
+    const unsubPayout = gameWsClient.on('PAYOUT_CREDITED', (data) => {
+      if (data?.paymentPointer === pointerRef.current) {
+        addToast(
+          `¡Premio acreditado! Has recibido tu pago saliente en Rafiki Testnet ($${data.amountUSD} USD).`,
+          'success',
+          '¡Ganador!'
+        );
+      }
+    });
 
-  // Sound tick on last 5 seconds
+    return () => {
+      unsubConnected();
+      unsubRoundState();
+      unsubRoundStart();
+      unsubTick();
+      unsubBetPlaced();
+      unsubRolling();
+      unsubOutcome();
+      unsubPayout();
+    };
+  }, [playTick, playWinFanfare, addToast, grant?.assetCode]);
+
+  // Enviar JOIN_ROOM cuando el usuario ingresa a la sala
   useEffect(() => {
-    if (phase === 'BETTING' && countdown.secondsRemaining <= 5 && countdown.secondsRemaining > 0) {
-      playTick();
+    if (isInRoom && grant?.pointer) {
+      gameWsClient.joinRoom(grant.pointer, grant.assetCode);
     }
-  }, [phase, countdown.secondsRemaining, playTick]);
+  }, [isInRoom, grant?.pointer, grant?.assetCode]);
 
-  // Simulate peer bots placing bets during BETTING phase
-  useEffect(() => {
-    if (phase === 'BETTING') {
-      // Periodic mock peer bet arrivals
-      const interval = window.setInterval(() => {
-        // 55% chance of a peer bet arriving every 2.8 seconds
-        if (Math.random() < 0.55 && countdown.secondsRemaining > 2) {
-          const peerBet = generateRandomPeerBet(roundId);
-          setBets((prev) => [...prev, peerBet]);
-        }
-      }, 2600);
-
-      botIntervalRef.current = interval;
-      return () => clearInterval(interval);
-    }
-  }, [phase, roundId, countdown.secondsRemaining]);
-
-  // Submit local player's bet
+  // Enviar apuesta al backend (ejecuta micro-pago en Rafiki vía Open Payments y broadcast en WS)
   const submitBet = useCallback(async () => {
     if (!selectedNumber) return;
 
@@ -189,7 +204,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
 
-    if (phase !== 'BETTING' || countdown.secondsRemaining <= 1) {
+    if (phase !== 'BETTING' || timeLeftSeconds <= 1) {
       addToast(COPY.toasts.roundClosed, 'warning');
       return;
     }
@@ -201,33 +216,29 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setIsSubmittingBet(true);
     try {
-      // Authorize micro-payment (deducts 10 cents from active grant)
-      const nativeAmount = convertUSDToNative(BET_AMOUNT_USD, grant.assetCode, grant.assetScale);
+      // 1. Ejecutar micro-pago de apuesta vía REST en el backend con el token de Open Payments
+      const tx = await authorizeMicroPayment(BET_AMOUNT_USD, roundId);
 
-      const localBet: PlayerBet = {
-        id: `bet_local_${Date.now()}`,
+      // 2. Notificar inmediatamente por WebSocket
+      gameWsClient.send('SUBMIT_BET', {
         roundId,
-        playerId: 'local_player',
-        playerName: 'Tú',
-        paymentPointer: grant.pointer,
+        numberGuess: selectedNumber,
+        pointer: grant.pointer,
         assetCode: grant.assetCode,
         assetScale: grant.assetScale,
-        nativeAmount,
-        numberGuess: selectedNumber,
-        amountUSD: 0.10,
-        isLocalPlayer: true,
-        timestamp: Date.now(),
-      };
+        nativeAmount: tx.amount,
+        amountUSD: BET_AMOUNT_USD,
+        grantToken: grant.accessToken,
+      });
 
-      setUserBet(localBet);
-      setBets((prev) => [...prev, localBet]);
       addToast(
-        `${COPY.toasts.betSuccess} ${selectedNumber}!`,
+        `${COPY.toasts.betSuccess} ${selectedNumber}! Transacción enviada a Rafiki.`,
         'success',
         '¡Apuesta Confirmada!'
       );
-    } catch {
-      // Error handled in WalletContext with toast
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error al procesar micro-pago';
+      addToast(msg, 'error', 'Error en Apuesta');
     } finally {
       setIsSubmittingBet(false);
     }
@@ -236,7 +247,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     isConnected,
     grant,
     phase,
-    countdown.secondsRemaining,
+    timeLeftSeconds,
     userBet,
     roundId,
     authorizeMicroPayment,
@@ -251,7 +262,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     roundId,
     roundNumber,
     phase,
-    timeLeftMs: countdown.timeLeftMs,
+    timeLeftMs: timeLeftSeconds * 1000,
     roundPool: currentRoundPool,
     accumulatedJackpot,
     totalPrizePool,

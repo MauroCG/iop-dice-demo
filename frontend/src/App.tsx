@@ -6,9 +6,29 @@ import { Header } from './features/layout/Header';
 import { Footer } from './features/layout/Footer';
 import { GameArena } from './features/game/components/GameArena';
 import { LobbyEntryScreen } from './features/wallet/LobbyEntryScreen';
+import { AuthCallbackScreen } from './features/wallet/AuthCallbackScreen';
 
 const MainContent: React.FC = () => {
   const { isInRoom } = useWallet();
+
+  React.useEffect(() => {
+    if (isInRoom && window.location.pathname.includes('/auth/callback')) {
+      window.history.replaceState(null, '', '/');
+    }
+  }, [isInRoom]);
+
+  const isAuthCallback =
+    !isInRoom &&
+    (window.location.search.includes('interact_ref') ||
+      window.location.pathname.includes('/auth/callback'));
+
+  if (isAuthCallback) {
+    return (
+      <div className="flex-1 flex flex-col">
+        <AuthCallbackScreen />
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1">

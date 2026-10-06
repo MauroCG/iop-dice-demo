@@ -85,4 +85,23 @@ describe('Endpoints REST de Billetera y Open Payments (/api)', () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toContain('Ya has registrado una apuesta para esta ronda');
   });
+
+  it('POST /api/wallet/grant/continue finaliza la autorización interactiva con interact_ref', async () => {
+    const res = await request(app)
+      .post('/api/wallet/grant/continue')
+      .send({
+        interactRef: 'test_ref_xyz_123',
+        continueUri: 'https://auth.interledger-test.dev/continue/test-id',
+        continueToken: 'token_cont_123',
+        walletAddress: '$ilp.interledger-test.dev/dicehouse',
+        totalAmount: 10,
+        assetCode: 'USD',
+        assetScale: 2,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('grantId');
+    expect(res.body).toHaveProperty('accessToken');
+    expect(res.body.totalAmount).toBe(10);
+  });
 });

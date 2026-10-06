@@ -5,6 +5,7 @@ const router = Router();
 
 router.get('/resolve', walletController.resolve);
 router.post('/grant', walletController.grant);
+router.post('/grant/continue', walletController.continueGrant);
 router.post('/bet', walletController.bet);
 
 export default router;

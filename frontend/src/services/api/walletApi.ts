@@ -1,7 +1,7 @@
 import { apiClient, simulateNetworkDelay } from './client';
 import type { GrantSession, MicroTransaction } from '../../types/wallet';
 import type { WalletAddressResolved } from '../../types/currency';
-import { MULTI_ASSET_DEMO_WALLETS, SUPPORTED_ASSETS } from '../../constants/currencies';
+import { SUPPORTED_ASSETS } from '../../constants/currencies';
 import { convertUSDToNative, formatAssetAmount } from '../../utils/formatters';
 
 export const walletApi = {
@@ -17,20 +17,15 @@ export const walletApi = {
         return res.data;
       }
     } catch {
-      // Si el backend no está disponible en este instante, usar heurística local
+      // Fallback
     }
 
     await simulateNetworkDelay(150);
 
-    // Buscar si coincide con alguno de los presets predefinidos
-    const match = MULTI_ASSET_DEMO_WALLETS.find(
-      (w) => w.pointer.toLowerCase() === cleanPointer.toLowerCase()
-    );
-    if (match) {
-      return match.resolved;
-    }
+    const openPaymentsUrl = cleanPointer.startsWith('$')
+      ? `https://${cleanPointer.slice(1)}`
+      : cleanPointer;
 
-    // Heurística de detección inteligente para punteros personalizados
     const lower = cleanPointer.toLowerCase();
     let assetCode = 'USD';
     let assetScale = 2;
@@ -38,10 +33,10 @@ export const walletApi = {
     if (lower.includes('cop') || lower.endsWith('.co') || lower.includes('bancolombia')) {
       assetCode = 'COP';
       assetScale = 0;
-    } else if (lower.includes('eur') || lower.endsWith('.eu')) {
+    } else if (lower.includes('eur') || lower.endsWith('.eu') || lower.includes('gatehub')) {
       assetCode = 'EUR';
       assetScale = 2;
-    } else if (lower.includes('gbp') || lower.endsWith('.uk')) {
+    } else if (lower.includes('gbp') || lower.endsWith('.uk') || lower.includes('fynbos')) {
       assetCode = 'GBP';
       assetScale = 2;
     } else if (lower.includes('mxn') || lower.endsWith('.mx') || lower.includes('bitso')) {
@@ -49,16 +44,12 @@ export const walletApi = {
       assetScale = 2;
     }
 
-    const openPaymentsUrl = cleanPointer.startsWith('$')
-      ? `https://${cleanPointer.slice(1)}`
-      : cleanPointer;
-
     return {
       id: openPaymentsUrl,
-      pointer: cleanPointer,
+      pointer: cleanPointer.startsWith('$') ? cleanPointer : `$${cleanPointer.replace(/^https?:\/\//, '')}`,
       assetCode,
       assetScale,
-      authServer: `https://auth.${cleanPointer.replace(/^\$/, '').split('/')[0]}`,
+      authServer: `https://auth.${cleanPointer.replace(/^\$|^https?:\/\//, '').split('/')[0]}`,
       resourceServer: openPaymentsUrl,
     };
   },
@@ -73,13 +64,23 @@ export const walletApi = {
         assetCode: resolvedWallet.assetCode,
         assetScale: resolvedWallet.assetScale,
         amountNative: grantAmountNative,
+        redirectUri: `${window.location.origin}/auth/callback`,
       });
-      if (res.data && res.data.grantId) {
-        localStorage.setItem('ilp_grant_token', res.data.grantId);
+
+      if (res.data?.requiresRedirect && res.data?.interactUrl) {
         return res.data;
       }
-    } catch {
-      // Fallback local si backend está desconectado
+
+      if (res.data && res.data.grantId) {
+        const token = res.data.accessToken || res.data.grantId;
+        localStorage.setItem('ilp_grant_token', token);
+        if (res.data.accessToken) {
+          localStorage.setItem('ilp_access_token', res.data.accessToken);
+        }
+        return res.data;
+      }
+    } catch (err: any) {
+      console.warn('[walletApi.requestGrant] Error llamando a /wallet/grant:', err.message);
     }
 
     await simulateNetworkDelay(250);
@@ -97,17 +98,39 @@ export const walletApi = {
       remainingAmount: grantAmountNative,
       equivalentUSD,
       createdAt: Date.now(),
-      expiresAt: Date.now() + 1000 * 60 * 60 * 4, // 4 horas
+      expiresAt: Date.now() + 1000 * 60 * 60 * 4,
     };
 
     localStorage.setItem('ilp_grant_token', grantId);
     return session;
   },
 
+  async continueGrant(params: {
+    interactRef: string;
+    continueUri: string;
+    continueToken: string;
+    walletAddress: string;
+    totalAmount: number;
+    assetCode: string;
+    assetScale: number;
+  }): Promise<GrantSession> {
+    const res = await apiClient.post<GrantSession>('/wallet/grant/continue', params);
+    if (res.data?.grantId) {
+      const realToken = res.data.accessToken || res.data.grantId;
+      localStorage.setItem('ilp_grant_token', realToken);
+      if (res.data.accessToken) {
+        localStorage.setItem('ilp_access_token', res.data.accessToken);
+      }
+      return res.data;
+    }
+    throw new Error('Respuesta inválida al continuar autorización');
+  },
+
   async executeMicroPayment(
     grantSession: GrantSession,
     roundId: string,
-    amountUSD = 0.10
+    amountUSD = 0.10,
+    numberGuess = 7
   ): Promise<{ updatedGrant: GrantSession; transaction: MicroTransaction }> {
     // Convertir $0.10 USD a la moneda nativa del jugador
     const nativeDebit = convertUSDToNative(
@@ -139,7 +162,8 @@ export const walletApi = {
         roundId,
         walletAddress: grantSession.pointer,
         pointer: grantSession.pointer,
-        numberGuess: 7, // Fallback guess for REST test
+        numberGuess,
+        grantToken: grantSession.accessToken,
         assetCode: grantSession.assetCode,
         assetScale: grantSession.assetScale,
         nativeAmount: nativeDebit,

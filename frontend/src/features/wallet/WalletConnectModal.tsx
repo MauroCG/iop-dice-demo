@@ -6,7 +6,6 @@ import { Button } from '../../components/shared/Button';
 import { CurrencyBadge } from '../../components/shared/CurrencyBadge';
 import { useWallet } from '../../context/WalletContext';
 import { paymentPointerSchema } from '../../schemas/wallet.schema';
-import { MULTI_ASSET_DEMO_WALLETS } from '../../constants/currencies';
 import { COPY } from '../../constants/copy.es';
 import { formatAssetAmount } from '../../utils/formatters';
 import type { WalletAddressResolved } from '../../types/currency';
@@ -25,36 +24,25 @@ export const WalletConnectModal: React.FC = () => {
   } = useWallet();
 
   const [inputPointer, setInputPointer] = useState(
-    currentPointer || MULTI_ASSET_DEMO_WALLETS[0].pointer
+    currentPointer || ''
   );
-  const [resolvedWallet, setResolvedWallet] = useState<WalletAddressResolved>(
-    MULTI_ASSET_DEMO_WALLETS[0].resolved
-  );
-  const [presetAmounts, setPresetAmounts] = useState<number[]>(
-    MULTI_ASSET_DEMO_WALLETS[0].presetGrants
-  );
-  const [selectedAmount, setSelectedAmount] = useState<number>(
-    MULTI_ASSET_DEMO_WALLETS[0].defaultGrant
-  );
+  const [resolvedWallet, setResolvedWallet] = useState<WalletAddressResolved>({
+    id: 'https://ilp.interledger-test.dev',
+    pointer: '$ilp.interledger-test.dev',
+    assetCode: 'USD',
+    assetScale: 2,
+  });
+  const [presetAmounts, setPresetAmounts] = useState<number[]>([1.0, 2.0, 5.0, 10.0]);
+  const [selectedAmount, setSelectedAmount] = useState<number>(5.0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let isCancelled = false;
     const trimmed = inputPointer.trim();
-    if (!trimmed) return;
-
-    const match = MULTI_ASSET_DEMO_WALLETS.find(
-      (w) => w.pointer.toLowerCase() === trimmed.toLowerCase()
-    );
-    if (match) {
-      setResolvedWallet(match.resolved);
-      setPresetAmounts(match.presetGrants);
-      setSelectedAmount(match.defaultGrant);
-      return;
-    }
+    if (!trimmed || trimmed.length < 5) return;
 
     resolveWallet(trimmed).then((res) => {
-      if (!isCancelled) {
+      if (!isCancelled && res) {
         setResolvedWallet(res);
         if (res.assetCode === 'COP') {
           setPresetAmounts([5000, 10000, 20000, 50000]);
@@ -63,11 +51,11 @@ export const WalletConnectModal: React.FC = () => {
           setPresetAmounts([20, 50, 100, 200]);
           setSelectedAmount(100);
         } else {
-          setPresetAmounts([1.0, 3.0, 5.0, 10.0]);
+          setPresetAmounts([1.0, 2.0, 5.0, 10.0]);
           setSelectedAmount(5.0);
         }
       }
-    });
+    }).catch(() => {});
 
     return () => {
       isCancelled = true;
@@ -77,14 +65,6 @@ export const WalletConnectModal: React.FC = () => {
   const handlePointerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputPointer(e.target.value);
     if (error) setError(null);
-  };
-
-  const handleSelectPreset = (preset: typeof MULTI_ASSET_DEMO_WALLETS[0]) => {
-    setInputPointer(preset.pointer);
-    setResolvedWallet(preset.resolved);
-    setPresetAmounts(preset.presetGrants);
-    setSelectedAmount(preset.defaultGrant);
-    setError(null);
   };
 
   const handleAuthorize = async () => {
@@ -160,29 +140,7 @@ export const WalletConnectModal: React.FC = () => {
             leftIcon={<Wallet className="w-4 h-4 text-neon-cyan" />}
           />
 
-          {/* Quick presets */}
-          <div className="mt-2 flex flex-col gap-1.5">
-            <span className="text-[11px] text-slate-400 font-medium">
-              {COPY.walletModal.quickFillTitle}
-            </span>
-            <div className="flex flex-wrap gap-1.5">
-              {MULTI_ASSET_DEMO_WALLETS.map((demo) => (
-                <button
-                  key={demo.pointer}
-                  type="button"
-                  onClick={() => handleSelectPreset(demo)}
-                  className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all flex items-center gap-1 ${
-                    inputPointer === demo.pointer
-                      ? 'border-neon-cyan/60 bg-neon-cyan/15 text-neon-cyan font-semibold'
-                      : 'border-slate-800 bg-dark-base text-slate-400 hover:text-slate-200 hover:border-slate-700'
-                  }`}
-                >
-                  <span>{demo.label}</span>
-                </button>
-              ))}
-            </div>
           </div>
-        </div>
 
         {/* Grant Allowance Selector */}
         <div className="flex flex-col gap-2">

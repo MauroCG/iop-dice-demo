@@ -8,6 +8,11 @@ export interface GrantSession {
   totalAmount: number; // Monto en la divisa nativa (ej. 20000 COP, 5.00 USD)
   remainingAmount: number; // Monto restante nativo (ej. 19580 COP)
   equivalentUSD: number; // Equivalente en USD (ej. 5.00 USD)
+  accessToken?: string;
+  continueUri?: string;
+  continueToken?: string;
+  interactUrl?: string;
+  requiresRedirect?: boolean;
   createdAt: number;
   expiresAt: number;
 }
@@ -48,4 +53,5 @@ export interface WalletContextType {
   isInRoom: boolean;
   enterRoom: () => void;
   leaveRoom: () => void;
+  finalizeInteractiveGrant: (session: GrantSession) => void;
 }

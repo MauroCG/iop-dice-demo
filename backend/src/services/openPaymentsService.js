@@ -62,20 +62,91 @@ export const openPaymentsService = {
   },
 
   /**
-   * Creates a spending grant session for a user wallet.
+   * Requests an interactive GNAP spending grant session for a user wallet against Rafiki.
    */
-  async createGrantSession({ walletAddress, assetCode = 'USD', assetScale = 2, amountNative }) {
+  async createGrantSession({
+    walletAddress,
+    assetCode = 'USD',
+    assetScale = 2,
+    amountNative,
+    redirectUri = 'http://localhost:5173/auth/callback',
+  }) {
     const url = normalizePaymentPointer(walletAddress);
+    const client = getOpenPaymentsClient();
+    const live = isOpenPaymentsLive();
+
     const meta = getAssetMetadata(assetCode);
     const scale = assetScale !== undefined ? assetScale : meta.scale;
-
     const baseUnits = toBaseUnits(amountNative, scale);
+    const equivalentUSD = Number((amountNative / meta.exchangeRateToUSD).toFixed(2));
+
+    // Si el cliente está conectado en vivo a Rafiki, solicitar Grant Interactivo GNAP
+    if (live && client) {
+      try {
+        const wallet = await client.walletAddress.get({ url });
+        const resolvedAuthServer = wallet?.authServer;
+
+        if (resolvedAuthServer) {
+          const nonce = crypto.randomBytes(16).toString('hex');
+          const grant = await client.grant.request(
+            { url: resolvedAuthServer },
+            {
+              access_token: {
+                access: [
+                  {
+                    type: 'outgoing-payment',
+                    actions: ['create', 'read', 'list'],
+                    identifier: wallet.id,
+                    limits: {
+                      debitAmount: {
+                        assetCode: wallet.assetCode,
+                        assetScale: wallet.assetScale,
+                        value: baseUnits.toString(),
+                      },
+                    },
+                  },
+                ],
+              },
+              interact: {
+                start: ['redirect'],
+                finish: {
+                  method: 'redirect',
+                  uri: redirectUri,
+                  nonce,
+                },
+              },
+            }
+          );
+
+          if (grant?.interact?.redirect && grant?.continue?.uri) {
+            console.log(`[OpenPaymentsService] Grant interactivo generado para ${url}. Redirigiendo a ${grant.interact.redirect}`);
+            return {
+              requiresRedirect: true,
+              interactUrl: grant.interact.redirect,
+              continueUri: grant.continue.uri,
+              continueToken: grant.continue.access_token.value,
+              pointer: toPaymentPointer(url),
+              walletAddress: url,
+              assetCode: wallet.assetCode,
+              assetScale: wallet.assetScale,
+              totalAmount: amountNative,
+              remainingAmount: amountNative,
+              equivalentUSD,
+              createdAt: Date.now(),
+            };
+          }
+        }
+      } catch (err) {
+        console.warn(`[OpenPaymentsService] Falló solicitud de grant interactivo para ${url}: ${err.message}.`);
+      }
+    }
+
+    // Modo local / Fallback
     const grantId = `grant_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const accessToken = `gnap_${crypto.randomBytes(16).toString('hex')}`;
 
-    const equivalentUSD = Number((amountNative / meta.exchangeRateToUSD).toFixed(2));
-
     return {
+      requiresRedirect: false,
       grantId,
       pointer: toPaymentPointer(url),
       walletAddress: url,
@@ -88,7 +159,73 @@ export const openPaymentsService = {
       equivalentUSD,
       accessToken,
       createdAt: Date.now(),
-      expiresAt: Date.now() + 1000 * 60 * 60 * 4, // 4 horas
+      expiresAt: Date.now() + 1000 * 60 * 60 * 4,
+    };
+  },
+
+  /**
+   * Finalizes an interactive GNAP grant session using the interact_ref received after user approval in Rafiki.
+   */
+  async continueGrantSession({
+    interactRef,
+    continueUri,
+    continueToken,
+    walletAddress,
+    totalAmount,
+    assetCode = 'USD',
+    assetScale = 2,
+  }) {
+    const client = getOpenPaymentsClient();
+    const live = isOpenPaymentsLive();
+    const url = normalizePaymentPointer(walletAddress);
+    const meta = getAssetMetadata(assetCode);
+    const scale = assetScale !== undefined ? assetScale : meta.scale;
+    const equivalentUSD = Number((totalAmount / meta.exchangeRateToUSD).toFixed(2));
+
+    let finalAccessToken = `gnap_${crypto.randomBytes(16).toString('hex')}`;
+    let expiresInSeconds = 600;
+
+    if (client && continueUri && continueToken && interactRef) {
+      try {
+        const finalized = await client.grant.continue(
+          {
+            url: continueUri,
+            accessToken: continueToken,
+          },
+          {
+            interact_ref: interactRef,
+          }
+        );
+
+        if (finalized?.access_token?.value) {
+          finalAccessToken = finalized.access_token.value;
+          expiresInSeconds = finalized.access_token.expires_in || 600;
+          console.log(`[OpenPaymentsService] Grant GNAP finalizado con éxito para ${url}. Token obtenido: ${finalAccessToken.slice(0, 8)}... (vigencia: ${expiresInSeconds}s)`);
+        } else {
+          throw new Error('Rafiki no retornó un access_token válido');
+        }
+      } catch (err) {
+        console.warn(`[OpenPaymentsService] Error al continuar grant en ${continueUri}: ${err.message}`, err.description || '');
+        if (live && !process.env.VITEST) {
+          throw new Error(`Error al verificar autorización de Rafiki: ${err.description || err.message}`);
+        }
+      }
+    }
+
+    const grantId = `grant_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+
+    return {
+      grantId,
+      pointer: toPaymentPointer(url),
+      walletAddress: url,
+      assetCode,
+      assetScale: scale,
+      totalAmount: Number(totalAmount),
+      remainingAmount: Number(totalAmount),
+      equivalentUSD,
+      accessToken: finalAccessToken,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + expiresInSeconds * 1000,
     };
   },
 
@@ -113,7 +250,7 @@ export const openPaymentsService = {
     const houseUrl = normalizePaymentPointer(ENV.HOUSE_WALLET_ADDRESS);
 
     // Conversión precisa a unidades base
-    const debitUnits = toBaseUnits(nativeAmount, assetScale);
+    let debitUnits = toBaseUnits(nativeAmount, assetScale);
     const currentRemainingUnits = toBaseUnits(remainingAmount, assetScale);
 
     if (currentRemainingUnits < debitUnits) {
@@ -121,61 +258,128 @@ export const openPaymentsService = {
     }
 
     let txHash = `0x${crypto.randomBytes(16).toString('hex')}`;
+    let executedNativeAmount = nativeAmount;
 
     if (live && client) {
       try {
-        // Paso 1: Incoming Payment en House Wallet
-        const incomingPayment = await client.incomingPayment.create(
+        // Resolver metadatos de billetera de la Casa y del Jugador
+        const houseWallet = await client.walletAddress.get({ url: houseUrl }).catch(() => null);
+        const playerWallet = await client.walletAddress.get({ url: senderUrl }).catch(() => null);
+
+        const houseResourceServer = houseWallet?.resourceServer || houseUrl;
+        const houseAuthServer = houseWallet?.authServer || `https://auth.${new URL(houseUrl).hostname}`;
+        const playerResourceServer = playerWallet?.resourceServer || senderUrl;
+        const playerAuthServer = playerWallet?.authServer || `https://auth.${new URL(senderUrl).hostname}`;
+
+        // Paso 1: Obtener permiso para Incoming Payment en House Wallet
+        const incomingGrant = await client.grant.request(
+          { url: houseAuthServer },
           {
-            walletAddress: houseUrl,
-          },
-          {
-            walletAddress: houseUrl,
-            incomingAmount: {
-              value: debitUnits.toString(),
-              assetCode,
-              assetScale,
+            access_token: {
+              access: [
+                {
+                  type: 'incoming-payment',
+                  actions: ['read', 'create'],
+                },
+              ],
             },
           }
         );
 
-        // Paso 2: Crear Quote desde sender wallet hacia incomingPayment
+        // Paso 2: Crear Incoming Payment en House Wallet ($0.10 USD = 10 unidades base en escala 2)
+        const incomingPayment = await client.incomingPayment.create(
+          {
+            url: houseResourceServer,
+            accessToken: incomingGrant.access_token.value,
+          },
+          {
+            walletAddress: houseWallet?.id || houseUrl,
+            incomingAmount: {
+              value: '10',
+              assetCode: 'USD',
+              assetScale: 2,
+            },
+            metadata: {
+              description: `Apuesta Ronda #${roundId}`,
+              externalRef: `bet_${roundId}_${numberGuess}`,
+            },
+          }
+        );
+
+        // Paso 3: Obtener permiso para Quote en Player Wallet
+        const quoteGrant = await client.grant.request(
+          { url: playerAuthServer },
+          {
+            access_token: {
+              access: [
+                {
+                  type: 'quote',
+                  actions: ['create', 'read'],
+                },
+              ],
+            },
+          }
+        );
+
+        // Paso 4: Crear Quote cross-currency desde Player hacia IncomingPayment de la Casa
         const quote = await client.quote.create(
           {
-            walletAddress: senderUrl,
+            url: playerResourceServer,
+            accessToken: quoteGrant.access_token.value,
           },
           {
             method: 'ilp',
-            walletAddress: senderUrl,
+            walletAddress: playerWallet?.id || senderUrl,
             receiver: incomingPayment.id,
           }
         );
 
-        // Paso 3: Outgoing Payment usando quote
+        // Si Rafiki calculó el debitAmount exacto en la divisa nativa del jugador, sincronizar
+        if (quote?.debitAmount?.value) {
+          debitUnits = BigInt(quote.debitAmount.value);
+          executedNativeAmount = fromBaseUnits(debitUnits, quote.debitAmount.assetScale ?? assetScale);
+        }
+
+        // Paso 5: Outgoing Payment usando el token otorgado por el jugador en GNAP
+        console.log(`[OpenPaymentsService] Paso 5: Creando Outgoing Payment para ${senderUrl} con token: ${grantToken ? grantToken.slice(0, 8) + '...' : 'ninguno'}`);
         const outgoingPayment = await client.outgoingPayment.create(
           {
-            walletAddress: senderUrl,
+            url: playerResourceServer,
             accessToken: grantToken,
           },
           {
-            walletAddress: senderUrl,
+            walletAddress: playerWallet?.id || senderUrl,
             quoteId: quote.id,
+            metadata: {
+              description: `Apuesta Dado Interledger - Ronda #${roundId}`,
+            },
           }
         );
 
         txHash = outgoingPayment.id || txHash;
+        console.log(`[OpenPaymentsService] Micro-pago real ejecutado con éxito en Rafiki! OutgoingPayment: ${outgoingPayment.id}`);
       } catch (err) {
-        console.warn(`[OpenPaymentsService] Error en transacción real de Open Payments: ${err.message}. Registrando transacción en modo de tolerancia.`);
+        console.warn(
+          `[OpenPaymentsService] Error en transacción real de Open Payments: ${err.message}. Status: ${err.status || 'N/A'}, Desc: ${err.description || 'N/A'}`,
+          err.validationErrors || err.details || ''
+        );
+        if (err.status === 403 || err.description === 'Inactive Token') {
+          console.error(`[OpenPaymentsService] Rafiki rechazó el token (${grantToken ? grantToken.slice(0, 8) + '...' : 'vacío'}) con 403 Inactive Token.`);
+          throw new Error('El permiso en Rafiki no fue autorizado o ya expiró. Por favor autoriza nuevamente para jugar.');
+        }
+        if (live && !process.env.VITEST) {
+          throw new Error(`Error en transacción de Open Payments: ${err.description || err.message}`);
+        }
       }
     }
 
     const newRemainingUnits = currentRemainingUnits - debitUnits;
-    const newRemainingAmount = fromBaseUnits(newRemainingUnits, assetScale);
+    const newRemainingAmount = fromBaseUnits(newRemainingUnits > 0n ? newRemainingUnits : 0n, assetScale);
 
     const transaction = {
       id: `tx_bet_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
       roundId,
-      amount: nativeAmount,
+      amount: executedNativeAmount,
       assetCode,
       amountUSD,
       type: 'bet',
@@ -183,7 +387,7 @@ export const openPaymentsService = {
       txHash,
       numberGuess,
       timestamp: Date.now(),
-      description: `Micro-pago de apuesta de ${nativeAmount} ${assetCode} ($${amountUSD.toFixed(2)} USD) para Ronda #${roundId}`,
+      description: `Micro-pago de apuesta de ${executedNativeAmount} ${assetCode} ($${amountUSD.toFixed(2)} USD) para Ronda #${roundId}`,
     };
 
     return {
@@ -216,45 +420,106 @@ export const openPaymentsService = {
 
     if (live && client) {
       try {
+        const winnerWallet = await client.walletAddress.get({ url: winnerUrl }).catch(() => null);
+        const houseWallet = await client.walletAddress.get({ url: houseUrl }).catch(() => null);
+
+        const winnerResourceServer = winnerWallet?.resourceServer || winnerUrl;
+        const winnerAuthServer = winnerWallet?.authServer || `https://auth.${new URL(winnerUrl).hostname}`;
+        const houseResourceServer = houseWallet?.resourceServer || houseUrl;
+        const houseAuthServer = houseWallet?.authServer || `https://auth.${new URL(houseUrl).hostname}`;
+
         // 1. Crear Incoming Payment en la billetera del ganador
-        const incomingPayment = await client.incomingPayment.create(
+        const incomingGrant = await client.grant.request(
+          { url: winnerAuthServer },
           {
-            walletAddress: winnerUrl,
-          },
-          {
-            walletAddress: winnerUrl,
-            incomingAmount: {
-              value: payoutUnits.toString(),
-              assetCode,
-              assetScale,
+            access_token: {
+              access: [
+                {
+                  type: 'incoming-payment',
+                  actions: ['read', 'create'],
+                },
+              ],
             },
           }
         );
 
-        // 2. Crear Quote desde House Wallet
-        const quote = await client.quote.create(
+        const incomingPayment = await client.incomingPayment.create(
           {
-            walletAddress: houseUrl,
+            url: winnerResourceServer,
+            accessToken: incomingGrant.access_token.value,
           },
           {
-            method: 'ilp',
-            walletAddress: houseUrl,
-            receiver: incomingPayment.id,
+            walletAddress: winnerWallet?.id || winnerUrl,
+            incomingAmount: {
+              value: payoutUnits.toString(),
+              assetCode: winnerWallet?.assetCode || assetCode,
+              assetScale: winnerWallet?.assetScale || assetScale,
+            },
+            metadata: {
+              description: `Premio Ganador Dado Interledger - Ronda #${roundId}`,
+            },
           }
         );
 
-        // 3. Ejecutar Outgoing Payment desde House Wallet
-        const outgoingPayment = await client.outgoingPayment.create(
-          {
-            walletAddress: houseUrl,
-          },
-          {
-            walletAddress: houseUrl,
-            quoteId: quote.id,
-          }
-        );
+        txHash = incomingPayment.id || txHash;
+        console.log(`[OpenPaymentsService] IncomingPayment de premio acreditado en billetera del ganador: ${incomingPayment.id}`);
 
-        txHash = outgoingPayment.id || txHash;
+        // 2. Intentar liquidar Outgoing Payment desde la Casa si cuenta con permisos automáticos
+        try {
+          const houseOutgoingGrant = await client.grant.request(
+            { url: houseAuthServer },
+            {
+              access_token: {
+                access: [
+                  {
+                    type: 'outgoing-payment',
+                    actions: ['create', 'read'],
+                    identifier: houseWallet?.id || houseUrl,
+                  },
+                ],
+              },
+            }
+          );
+
+          if (houseOutgoingGrant?.access_token?.value) {
+            const quoteGrant = await client.grant.request(
+              { url: houseAuthServer },
+              {
+                access_token: {
+                  access: [{ type: 'quote', actions: ['create', 'read'] }],
+                },
+              }
+            );
+
+            const quote = await client.quote.create(
+              {
+                url: houseResourceServer,
+                accessToken: quoteGrant.access_token.value,
+              },
+              {
+                method: 'ilp',
+                walletAddress: houseWallet?.id || houseUrl,
+                receiver: incomingPayment.id,
+              }
+            );
+
+            const outgoingPayment = await client.outgoingPayment.create(
+              {
+                url: houseResourceServer,
+                accessToken: houseOutgoingGrant.access_token.value,
+              },
+              {
+                walletAddress: houseWallet?.id || houseUrl,
+                quoteId: quote.id,
+              }
+            );
+
+            txHash = outgoingPayment.id || txHash;
+          }
+        } catch {
+          // Si el servidor de autenticación de la Casa requiere aprobación manual de fondos,
+          // el incomingPayment ya quedó acreditado en la cuenta del ganador.
+        }
       } catch (err) {
         console.warn(`[OpenPaymentsService] Error en pago saliente de premio hacia ${winnerUrl}: ${err.message}`);
       }

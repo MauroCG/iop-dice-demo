@@ -75,6 +75,23 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setIsAuthorizing(true);
       try {
         const session = await walletApi.requestGrant(resolvedWallet, grantAmountNative);
+
+        // Si Rafiki requiere autorización interactiva, guardar estado pendiente y redirigir
+        if (session.requiresRedirect && session.interactUrl) {
+          const payload = JSON.stringify({
+            continueUri: session.continueUri,
+            continueToken: session.continueToken,
+            walletAddress: resolvedWallet.pointer || resolvedWallet.id,
+            totalAmount: grantAmountNative,
+            assetCode: resolvedWallet.assetCode,
+            assetScale: resolvedWallet.assetScale,
+          });
+          sessionStorage.setItem('pending_gnap_grant', payload);
+          localStorage.setItem('pending_gnap_grant', payload);
+          window.location.href = session.interactUrl;
+          return false;
+        }
+
         saveGrant(session);
         setPointer(session.pointer);
         setAssetCode(session.assetCode);
@@ -121,8 +138,48 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     [addToast]
   );
 
+  const finalizeInteractiveGrant = useCallback(
+    (session: GrantSession) => {
+      saveGrant(session);
+      setPointer(session.pointer);
+      setAssetCode(session.assetCode);
+      setAssetScale(session.assetScale);
+      setIsInRoom(true);
+
+      addTransaction({
+        id: `tx_init_${Date.now()}`,
+        roundId: '0',
+        amount: session.totalAmount,
+        assetCode: session.assetCode,
+        amountUSD: session.equivalentUSD,
+        type: 'grant',
+        status: 'success',
+        timestamp: Date.now(),
+        txHash: session.grantId,
+        description: `Permiso interactivo de ${formatAssetAmount(
+          session.totalAmount,
+          session.assetCode,
+          session.assetScale
+        )} autorizado en Rafiki`,
+      });
+
+      addToast(
+        `${COPY.toasts.grantSuccess} ${formatAssetAmount(
+          session.totalAmount,
+          session.assetCode,
+          session.assetScale
+        )} (${session.assetCode})`,
+        'success',
+        'Billetera Conectada'
+      );
+    },
+    [addToast]
+  );
+
   const disconnectWallet = useCallback(() => {
     saveGrant(null);
+    localStorage.removeItem('ilp_grant_token');
+    localStorage.removeItem('ilp_access_token');
     setPointer(null);
     setIsInRoom(false);
     addToast(COPY.toasts.walletDisconnected, 'info');
@@ -207,6 +264,7 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         isInRoom,
         enterRoom,
         leaveRoom,
+        finalizeInteractiveGrant,
       }}
     >
       {children}

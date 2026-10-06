@@ -5,7 +5,6 @@ import { Button } from '../../components/shared/Button';
 import { CurrencyBadge } from '../../components/shared/CurrencyBadge';
 import { useWallet } from '../../context/WalletContext';
 import { paymentPointerSchema } from '../../schemas/wallet.schema';
-import { MULTI_ASSET_DEMO_WALLETS } from '../../constants/currencies';
 import { COPY } from '../../constants/copy.es';
 import { formatAssetAmount } from '../../utils/formatters';
 import { RulesModal } from '../game/components/RulesModal';
@@ -14,23 +13,24 @@ import type { WalletAddressResolved } from '../../types/currency';
 export const LobbyEntryScreen: React.FC = () => {
   const {
     pointer: currentPointer,
+    grant,
     isAuthorizing,
     connectWallet,
     resolveWallet,
+    enterRoom,
   } = useWallet();
 
   const [inputPointer, setInputPointer] = useState(
-    currentPointer || MULTI_ASSET_DEMO_WALLETS[0].pointer
+    currentPointer || ''
   );
-  const [resolvedWallet, setResolvedWallet] = useState<WalletAddressResolved>(
-    MULTI_ASSET_DEMO_WALLETS[0].resolved
-  );
-  const [presetAmounts, setPresetAmounts] = useState<number[]>(
-    MULTI_ASSET_DEMO_WALLETS[0].presetGrants
-  );
-  const [selectedAmount, setSelectedAmount] = useState<number>(
-    MULTI_ASSET_DEMO_WALLETS[0].defaultGrant
-  );
+  const [resolvedWallet, setResolvedWallet] = useState<WalletAddressResolved>({
+    id: 'https://ilp.interledger-test.dev',
+    pointer: '$ilp.interledger-test.dev',
+    assetCode: 'USD',
+    assetScale: 2,
+  });
+  const [presetAmounts, setPresetAmounts] = useState<number[]>([1.0, 2.0, 5.0, 10.0]);
+  const [selectedAmount, setSelectedAmount] = useState<number>(5.0);
   const [error, setError] = useState<string | null>(null);
   const [isRulesModalOpen, setIsRulesModalOpen] = useState(false);
 
@@ -38,22 +38,11 @@ export const LobbyEntryScreen: React.FC = () => {
   useEffect(() => {
     let isCancelled = false;
     const trimmed = inputPointer.trim();
-    if (!trimmed) return;
+    if (!trimmed || trimmed.length < 5 || trimmed.includes('\n') || trimmed.includes(' ') || trimmed.length > 150) return;
 
-    // Check if matches known demo preset
-    const match = MULTI_ASSET_DEMO_WALLETS.find(
-      (w) => w.pointer.toLowerCase() === trimmed.toLowerCase()
-    );
-    if (match) {
-      setResolvedWallet(match.resolved);
-      setPresetAmounts(match.presetGrants);
-      setSelectedAmount(match.defaultGrant);
-      return;
-    }
-
-    // Otherwise resolve dynamically via mock Open Payments endpoint
+    // Resolve dynamically via Open Payments endpoint
     resolveWallet(trimmed).then((res) => {
-      if (!isCancelled) {
+      if (!isCancelled && res) {
         setResolvedWallet(res);
         if (res.assetCode === 'COP') {
           setPresetAmounts([5000, 10000, 20000, 50000]);
@@ -62,10 +51,12 @@ export const LobbyEntryScreen: React.FC = () => {
           setPresetAmounts([20, 50, 100, 200]);
           setSelectedAmount(100);
         } else {
-          setPresetAmounts([1.0, 3.0, 5.0, 10.0]);
+          setPresetAmounts([1.0, 2.0, 5.0, 10.0]);
           setSelectedAmount(5.0);
         }
       }
+    }).catch(() => {
+      // Ignorar errores transitorios de tipeo
     });
 
     return () => {
@@ -76,14 +67,6 @@ export const LobbyEntryScreen: React.FC = () => {
   const handlePointerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputPointer(e.target.value);
     if (error) setError(null);
-  };
-
-  const handleSelectPreset = (preset: typeof MULTI_ASSET_DEMO_WALLETS[0]) => {
-    setInputPointer(preset.pointer);
-    setResolvedWallet(preset.resolved);
-    setPresetAmounts(preset.presetGrants);
-    setSelectedAmount(preset.defaultGrant);
-    setError(null);
   };
 
   const handleAuthorizeAndEnter = async () => {
@@ -136,6 +119,29 @@ export const LobbyEntryScreen: React.FC = () => {
       {/* Main Entry Card */}
       <div className="w-full max-w-xl bg-dark-surface/90 border border-slate-800 rounded-3xl p-6 sm:p-7 backdrop-blur-xl shadow-2xl border-t border-t-neon-cyan/30 shadow-glow-cyan/10">
         <div className="flex flex-col gap-5">
+          {/* Active Session Quick Re-entry */}
+          {grant && grant.remainingAmount > 0 && grant.expiresAt > Date.now() && (
+            <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-between gap-3 shadow-glow-cyan/5">
+              <div className="flex flex-col">
+                <span className="text-[11px] font-semibold text-emerald-400">Sesión Activa Guardada</span>
+                <span className="text-xs text-white font-mono font-medium truncate max-w-[240px]">
+                  {grant.pointer}
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  Saldo: {formatAssetAmount(grant.remainingAmount, grant.assetCode, grant.assetScale)} ({grant.assetCode})
+                </span>
+              </div>
+              <Button
+                variant="neon"
+                size="sm"
+                onClick={enterRoom}
+                className="shrink-0 text-xs py-2 px-3 shadow-glow-cyan"
+              >
+                Reingresar <ArrowRight className="w-3.5 h-3.5 ml-1" />
+              </Button>
+            </div>
+          )}
+
           {/* 1. Payment Pointer Input with Dynamic Currency Badge */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
@@ -158,27 +164,13 @@ export const LobbyEntryScreen: React.FC = () => {
               leftIcon={<Wallet className="w-4 h-4 text-neon-cyan" />}
             />
 
-            {/* Multi-Asset Test Wallet Presets */}
-            <div className="mt-2.5 flex flex-col gap-1.5">
-              <span className="text-[11px] text-slate-400 font-medium">
-                Punteros multi-moneda de demostración:
-              </span>
-              <div className="flex flex-wrap gap-1.5">
-                {MULTI_ASSET_DEMO_WALLETS.map((demo) => (
-                  <button
-                    key={demo.pointer}
-                    type="button"
-                    onClick={() => handleSelectPreset(demo)}
-                    className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all flex items-center gap-1.5 ${
-                      inputPointer === demo.pointer
-                        ? 'border-neon-cyan/60 bg-neon-cyan/15 text-neon-cyan font-semibold shadow-sm'
-                        : 'border-slate-800 bg-dark-base text-slate-400 hover:text-slate-200 hover:border-slate-700'
-                    }`}
-                  >
-                    <span>{demo.label}</span>
-                    <CurrencyBadge assetCode={demo.resolved.assetCode} size="xs" />
-                  </button>
-                ))}
+            {/* Real Rafiki Testnet Explanation */}
+            <div className="mt-2.5 p-3 rounded-xl bg-slate-900/70 border border-slate-800 text-[11px] text-slate-400 flex items-start gap-2.5">
+              <Sparkles className="w-4 h-4 text-neon-cyan shrink-0 mt-0.5" />
+              <div className="leading-relaxed">
+                Ingresa tu Payment Pointer de la <strong className="text-slate-200">Testnet de Rafiki</strong> (ej.{' '}
+                <code className="text-neon-cyan font-mono bg-neon-cyan/10 px-1 py-0.5 rounded">$ilp.interledger-test.dev/tu_usuario</code>).
+                Al autorizar, serás redirigido a la interfaz de Rafiki para otorgar tu consentimiento seguro vía GNAP.
               </div>
             </div>
           </div>

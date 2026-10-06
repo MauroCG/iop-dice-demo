@@ -15,9 +15,9 @@ export const apiClient: AxiosInstance = axios.create({
 apiClient.interceptors.request.use(
   (config) => {
     // Ready for Open Payments GNAP grant access token attachment
-    const activeGrantToken = localStorage.getItem('ilp_grant_token');
-    if (activeGrantToken && config.headers) {
-      config.headers.Authorization = `GNAP ${activeGrantToken}`;
+    const activeToken = localStorage.getItem('ilp_access_token') || localStorage.getItem('ilp_grant_token');
+    if (activeToken && !activeToken.startsWith('grant_') && config.headers) {
+      config.headers.Authorization = `GNAP ${activeToken}`;
     }
     return config;
   },
