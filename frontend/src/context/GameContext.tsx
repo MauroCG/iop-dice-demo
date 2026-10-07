@@ -39,6 +39,13 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const pointerRef = useRef(grant?.pointer);
   pointerRef.current = grant?.pointer;
 
+  const isSamePointer = (p1?: string | null, p2?: string | null) => {
+    if (!p1 || !p2) return false;
+    const c1 = p1.trim().replace(/^https?:\/\//i, '$').replace(/\/+$/, '');
+    const c2 = p2.trim().replace(/^https?:\/\//i, '$').replace(/\/+$/, '');
+    return c1.length > 0 && c1 === c2;
+  };
+
   // Conectar WebSocket y sincronizar estado autoritativo
   useEffect(() => {
     gameWsClient.connect();
@@ -61,7 +68,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const mappedBets: PlayerBet[] = (data.bets || []).map((b: any) => ({
         ...b,
-        isLocalPlayer: b.paymentPointer === pointerRef.current,
+        isLocalPlayer: isSamePointer(b.paymentPointer, pointerRef.current),
       }));
       setBets(mappedBets);
 
@@ -99,14 +106,16 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const unsubBetPlaced = gameWsClient.on('BET_PLACED', (data) => {
       if (!data) return;
-      const isLocal = data.paymentPointer === pointerRef.current;
+      const isLocal = isSamePointer(data.paymentPointer, pointerRef.current);
       const formattedBet: PlayerBet = {
         ...data,
         isLocalPlayer: isLocal,
       };
 
       setBets((prev) => {
-        const filtered = prev.filter((b) => b.id !== data.id && b.paymentPointer !== data.paymentPointer);
+        const filtered = prev.filter(
+          (b) => b.id !== data.id && !isSamePointer(b.paymentPointer, data.paymentPointer)
+        );
         return [...filtered, formattedBet];
       });
 
@@ -146,7 +155,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
       ]);
 
       // Verificar si el usuario local ganó
-      const userWon = data.winners?.some((w: any) => w.paymentPointer === pointerRef.current);
+      const userWon = data.winners?.some((w: any) => isSamePointer(w.paymentPointer, pointerRef.current));
       if (userWon) {
         playWinFanfare();
         try {
@@ -167,7 +176,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const unsubPayout = gameWsClient.on('PAYOUT_CREDITED', (data) => {
-      if (data?.paymentPointer === pointerRef.current) {
+      if (isSamePointer(data?.paymentPointer, pointerRef.current)) {
         addToast(
           `¡Premio acreditado! Has recibido tu pago saliente en Rafiki Testnet ($${data.amountUSD} USD).`,
           'success',
