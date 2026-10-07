@@ -60,6 +60,16 @@ export function setupWebSocketServer(httpServer) {
 
           case 'SUBMIT_BET': {
             try {
+              const existingBet = gameEngine.bets.get(data.pointer);
+              if (existingBet && existingBet.roundId === data.roundId) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'BET_CONFIRMED',
+                    data: existingBet,
+                  })
+                );
+                break;
+              }
               const bet = gameEngine.placeBet(data);
               ws.send(
                 JSON.stringify({

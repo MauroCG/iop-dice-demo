@@ -217,7 +217,7 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setIsSubmittingBet(true);
     try {
       // 1. Ejecutar micro-pago de apuesta vía REST en el backend con el token de Open Payments
-      const tx = await authorizeMicroPayment(BET_AMOUNT_USD, roundId);
+      const tx = await authorizeMicroPayment(BET_AMOUNT_USD, roundId, selectedNumber);
 
       // 2. Notificar inmediatamente por WebSocket
       gameWsClient.send('SUBMIT_BET', {

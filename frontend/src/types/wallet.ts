@@ -44,7 +44,7 @@ export interface WalletContextType {
   resolveWallet: (pointer: string) => Promise<WalletAddressResolved>;
   connectWallet: (resolvedWallet: WalletAddressResolved, grantAmountNative: number) => Promise<boolean>;
   disconnectWallet: () => void;
-  authorizeMicroPayment: (amountUSD: number, roundId: string) => Promise<MicroTransaction>;
+  authorizeMicroPayment: (amountUSD: number, roundId: string, numberGuess?: number) => Promise<MicroTransaction>;
   creditPayout: (amountUSD: number, roundId: string) => Promise<void>;
   isModalOpen: boolean;
   setIsModalOpen: (open: boolean) => void;

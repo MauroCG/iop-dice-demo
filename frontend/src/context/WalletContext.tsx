@@ -199,14 +199,14 @@ export const WalletProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [addToast]);
 
   const authorizeMicroPayment = useCallback(
-    async (amountUSD: number, roundId: string): Promise<MicroTransaction> => {
+    async (amountUSD: number, roundId: string, numberGuess?: number): Promise<MicroTransaction> => {
       if (!grant) {
         setIsModalOpen(true);
         throw new Error('Debes conectar una billetera con permiso activo.');
       }
 
       try {
-        const result = await walletApi.executeMicroPayment(grant, roundId, amountUSD);
+        const result = await walletApi.executeMicroPayment(grant, roundId, amountUSD, numberGuess);
         saveGrant(result.updatedGrant);
         addTransaction(result.transaction);
         return result.transaction;

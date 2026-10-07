@@ -130,8 +130,12 @@ export const walletApi = {
     grantSession: GrantSession,
     roundId: string,
     amountUSD = 0.10,
-    numberGuess = 7
+    numberGuess?: number
   ): Promise<{ updatedGrant: GrantSession; transaction: MicroTransaction }> {
+    if (numberGuess === undefined || isNaN(numberGuess) || numberGuess < 2 || numberGuess > 12) {
+      throw new Error('Debes seleccionar un número válido entre 2 y 12 para apostar');
+    }
+
     // Convertir $0.10 USD a la moneda nativa del jugador
     const nativeDebit = convertUSDToNative(
       amountUSD,
